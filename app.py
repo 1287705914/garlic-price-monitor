@@ -10,7 +10,19 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "garlic.db")
-CRAWL_URL = os.getenv("CRAWL_URL", "")
+CRAWL_URL = os.getenv(
+    "CRAWL_URL",
+    "https://www.cnhnb.com/hangqing/cdlist-2000475-0-0-0-0-{page}/"
+)
+CRAWL_PAGES = int(os.getenv("CRAWL_PAGES", "3"))  # 抓取页数
+CRAWL_INTERVAL = int(os.getenv("CRAWL_INTERVAL", "3600"))  # 抓取间隔(秒), 默认1小时
+
+# 河南相关地名关键词
+HENAN_KEYWORDS = [
+    "河南", "中牟", "杞县", "开封", "郑州", "洛阳", "商丘",
+    "南阳", "驻马店", "周口", "新乡", "安阳", "许昌", "信阳",
+    "平顶山", "焦作", "濮阳", "漯河", "三门峡", "鹤壁",
+]
 
 # ========== 数据库 ==========
 
@@ -37,46 +49,68 @@ def init_db():
 
 # ========== 爬虫 ==========
 
+def is_henan(place: str) -> bool:
+    """判断产地是否属于河南"""
+    for kw in HENAN_KEYWORDS:
+        if kw in place:
+            return True
+    return False
+
 def fetch_prices() -> list:
-    """抓取价格数据，返回 [{variety, origin, price}, ...]。源站不可用时返回空列表。"""
-    if not CRAWL_URL:
-        return []
-    try:
-        resp = httpx.get(CRAWL_URL, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        rows = soup.select("table.price-table tr")
-        results = []
-        for row in rows[1:]:
-            cols = row.find_all("td")
-            if len(cols) >= 3:
-                try:
-                    results.append({
-                        "variety": cols[0].text.strip(),
-                        "origin": cols[1].text.strip(),
-                        "price": float(cols[2].text.strip()),
-                    })
-                except (ValueError, AttributeError):
+    """从惠农网抓取河南大蒜价格数据。返回 [{time, variety, origin, price, change}, ...]。"""
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    for page in range(1, CRAWL_PAGES + 1):
+        url = CRAWL_URL.format(page=page)
+        try:
+            resp = httpx.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            items = soup.select("div.quotation-content-list li.market-list-item")
+            for item in items:
+                time_el = item.select_one("span.time")
+                product_el = item.select_one("span.product")
+                place_el = item.select_one("span.place")
+                price_el = item.select_one("span.price")
+                change_el = item.select_one("span.lifting")
+                if not all([time_el, product_el, place_el, price_el]):
                     continue
-        return results
-    except Exception:
-        return []
+                product = product_el.get_text(strip=True)
+                place = place_el.get_text(strip=True)
+                price_text = price_el.get_text(strip=True)
+                # 只抓大蒜相关品种 + 河南产地
+                if "蒜" not in product or not is_henan(place):
+                    continue
+                try:
+                    price = float(price_text.replace("元/斤", "").replace("元/公斤", "").strip())
+                except ValueError:
+                    continue
+                results.append({
+                    "time": time_el.get_text(strip=True),
+                    "variety": product,
+                    "origin": place,
+                    "price": price,
+                    "change": change_el.get_text(strip=True) if change_el else "-",
+                })
+        except Exception:
+            continue
+    return results
 
 def save_prices(data: list, source: str):
-    """将价格数据写入数据库，按分钟去重。"""
+    """将价格数据写入数据库，按(日期, 品种, 产地)去重。"""
     if not data:
         return
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     with get_db() as conn:
         for item in data:
+            report_date = item.get("time", datetime.now().strftime("%Y-%m-%d"))
             existing = conn.execute(
                 "SELECT id FROM prices WHERE time LIKE ? AND variety=? AND origin=?",
-                (f"{now}%", item["variety"], item["origin"])
+                (f"{report_date}%", item["variety"], item["origin"])
             ).fetchone()
             if not existing:
                 conn.execute(
                     "INSERT INTO prices (time, variety, origin, price, source) VALUES (?, ?, ?, ?, ?)",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    (f"{report_date} {datetime.now().strftime('%H:%M:%S')}",
                      item["variety"], item["origin"], item["price"], source)
                 )
         conn.commit()
@@ -88,9 +122,9 @@ async def lifespan(application: FastAPI):
     init_db()
     scheduler = BackgroundScheduler()
     scheduler.add_job(
-        lambda: save_prices(fetch_prices(), CRAWL_URL or "惠农网"),
+        lambda: save_prices(fetch_prices(), "惠农网"),
         "interval",
-        seconds=60,
+        seconds=CRAWL_INTERVAL,
         id="crawler",
     )
     scheduler.start()

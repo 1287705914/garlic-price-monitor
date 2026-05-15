@@ -66,41 +66,94 @@ class TestDatabase:
         assert rows[0]["price"] == 3.85
 
 
+class TestHenanFilter:
+    def test_is_henan_true(self):
+        assert app_module.is_henan("河南郑州市中牟县") is True
+        assert app_module.is_henan("开封市杞县") is True
+        assert app_module.is_henan("洛阳市") is True
+
+    def test_is_henan_false(self):
+        assert app_module.is_henan("山东潍坊市") is False
+        assert app_module.is_henan("江苏徐州市") is False
+
+
 class TestCrawler:
-    def test_parse_html(self):
+    def test_parse_cnhnb_html(self):
+        """测试惠农网行情列表解析"""
         sample_html = """
         <html><body>
-        <table class="price-table">
-            <tr><th>品种</th><th>产地</th><th>价格</th></tr>
-            <tr><td>白蒜</td><td>中牟</td><td>3.85</td></tr>
-            <tr><td>红蒜</td><td>杞县</td><td>3.60</td></tr>
-            <tr><td>杂交蒜</td><td>中牟</td><td>3.42</td></tr>
-        </table>
+        <div class="quotation-content-list">
+        <ul>
+        <li class="market-list-item">
+          <a href="/hangqing/cd-1/">
+            <span class="time">2026-05-15</span>
+            <span class="product">白蒜</span>
+            <span class="place">郑州市中牟县</span>
+            <span class="price">3.85元/斤</span>
+            <span class="lifting">-0.05</span>
+          </a>
+        </li>
+        <li class="market-list-item">
+          <a href="/hangqing/cd-2/">
+            <span class="time">2026-05-15</span>
+            <span class="product">红蒜</span>
+            <span class="place">开封市杞县</span>
+            <span class="price">3.60元/斤</span>
+            <span class="lifting">+0.10</span>
+          </a>
+        </li>
+        <li class="market-list-item">
+          <a href="/hangqing/cd-3/">
+            <span class="time">2026-05-15</span>
+            <span class="product">杂交蒜</span>
+            <span class="place">山东潍坊市</span>
+            <span class="price">2.80元/斤</span>
+            <span class="lifting">-</span>
+          </a>
+        </li>
+        </ul>
+        </div>
         </body></html>"""
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(sample_html, "html.parser")
-        rows = soup.select("table.price-table tr")
-        results = []
-        for row in rows[1:]:
-            cols = row.find_all("td")
-            results.append({
-                "variety": cols[0].text.strip(),
-                "origin": cols[1].text.strip(),
-                "price": float(cols[2].text.strip()),
-            })
-        assert len(results) == 3
-        assert results[0] == {"variety": "白蒜", "origin": "中牟", "price": 3.85}
+        items = soup.select("div.quotation-content-list li.market-list-item")
 
-    def test_empty_response_handled(self):
+        results = []
+        for item in items:
+            time_el = item.select_one("span.time")
+            product_el = item.select_one("span.product")
+            place_el = item.select_one("span.place")
+            price_el = item.select_one("span.price")
+            change_el = item.select_one("span.lifting")
+            if not all([time_el, product_el, place_el, price_el]):
+                continue
+            product = product_el.get_text(strip=True)
+            place = place_el.get_text(strip=True)
+            price_text = price_el.get_text(strip=True)
+            if "蒜" not in product or not app_module.is_henan(place):
+                continue
+            price = float(price_text.replace("元/斤", "").replace("元/公斤", "").strip())
+            results.append({
+                "time": time_el.get_text(strip=True),
+                "variety": product,
+                "origin": place,
+                "price": price,
+                "change": change_el.get_text(strip=True) if change_el else "-",
+            })
+
+        # 应该过滤掉山东的那条
+        assert len(results) == 2
+        assert results[0]["variety"] == "白蒜"
+        assert results[0]["origin"] == "郑州市中牟县"
+        assert results[0]["price"] == 3.85
+        assert results[1]["variety"] == "红蒜"
+        assert results[1]["origin"] == "开封市杞县"
+
+    def test_empty_page_handled(self):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup("", "html.parser")
-        rows = soup.select("table.price-table tr")
-        results = []
-        for row in rows[1:]:
-            cols = row.find_all("td")
-            if len(cols) >= 3:
-                results.append({})
-        assert results == []
+        items = soup.select("div.quotation-content-list li.market-list-item")
+        assert len(items) == 0
 
 
 class TestAPI:
