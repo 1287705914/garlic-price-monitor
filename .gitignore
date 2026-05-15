@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 *.db
+*.log
 api_response.json
 debug_data.txt
+stockstar_*.txt
+stockstar_*.json
 .pytest_cache/
+data_check*.json

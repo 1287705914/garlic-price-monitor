@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: garlic-price-monitor
+    env: python
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    plan: free
