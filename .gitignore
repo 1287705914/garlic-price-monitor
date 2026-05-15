@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 *.db
+api_response.json
+debug_data.txt
 .pytest_cache/
