@@ -1,28 +1,21 @@
-"""河南大蒜价格实时监控系统"""
+"""全国大蒜价格实时监控系统"""
 import sqlite3
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from apscheduler.schedulers.background import BackgroundScheduler
-import httpx
+import requests as http_requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "garlic.db")
 CRAWL_URL = os.getenv(
     "CRAWL_URL",
-    "https://www.cnhnb.com/hangqing/cdlist-2000475-0-0-0-0-{page}/"
+    "https://www.cnhnb.com/hangqing/dasuan/"
 )
-CRAWL_PAGES = int(os.getenv("CRAWL_PAGES", "3"))  # 抓取页数
-CRAWL_INTERVAL = int(os.getenv("CRAWL_INTERVAL", "3600"))  # 抓取间隔(秒), 默认1小时
-
-# 河南相关地名关键词
-HENAN_KEYWORDS = [
-    "河南", "中牟", "杞县", "开封", "郑州", "洛阳", "商丘",
-    "南阳", "驻马店", "周口", "新乡", "安阳", "许昌", "信阳",
-    "平顶山", "焦作", "濮阳", "漯河", "三门峡", "鹤壁",
-]
+CRAWL_PAGES = int(os.getenv("CRAWL_PAGES", "3"))
+CRAWL_INTERVAL = int(os.getenv("CRAWL_INTERVAL", "3600"))
 
 # ========== 数据库 ==========
 
@@ -49,51 +42,47 @@ def init_db():
 
 # ========== 爬虫 ==========
 
-def is_henan(place: str) -> bool:
-    """判断产地是否属于河南"""
-    for kw in HENAN_KEYWORDS:
-        if kw in place:
-            return True
-    return False
-
 def fetch_prices() -> list:
-    """从惠农网抓取河南大蒜价格数据。返回 [{time, variety, origin, price, change}, ...]。"""
+    """从惠农网抓取全国大蒜价格数据。返回 [{time, variety, origin, price, change}, ...]。"""
     results = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    for page in range(1, CRAWL_PAGES + 1):
-        url = CRAWL_URL.format(page=page)
-        try:
-            resp = httpx.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            items = soup.select("div.quotation-content-list li.market-list-item")
-            for item in items:
-                time_el = item.select_one("span.time")
-                product_el = item.select_one("span.product")
-                place_el = item.select_one("span.place")
-                price_el = item.select_one("span.price")
-                change_el = item.select_one("span.lifting")
-                if not all([time_el, product_el, place_el, price_el]):
-                    continue
-                product = product_el.get_text(strip=True)
-                place = place_el.get_text(strip=True)
-                price_text = price_el.get_text(strip=True)
-                # 只抓大蒜相关品种 + 河南产地
-                if "蒜" not in product or not is_henan(place):
-                    continue
-                try:
-                    price = float(price_text.replace("元/斤", "").replace("元/公斤", "").strip())
-                except ValueError:
-                    continue
-                results.append({
-                    "time": time_el.get_text(strip=True),
-                    "variety": product,
-                    "origin": place,
-                    "price": price,
-                    "change": change_el.get_text(strip=True) if change_el else "-",
-                })
-        except Exception:
-            continue
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    url = CRAWL_URL
+    try:
+        resp = http_requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = soup.select("div.quotation-content-list li.market-list-item")
+        for item in items:
+            time_el = item.select_one("span.time")
+            product_el = item.select_one("span.product")
+            place_el = item.select_one("span.place")
+            price_el = item.select_one("span.price")
+            change_el = item.select_one("span.lifting")
+            if not all([time_el, product_el, place_el, price_el]):
+                continue
+            product = product_el.get_text(strip=True)
+            place = place_el.get_text(strip=True)
+            price_text = price_el.get_text(strip=True)
+            if "蒜" not in product:
+                continue
+            try:
+                price = float(price_text.replace("元/斤", "").replace("元/公斤", "").strip())
+            except ValueError:
+                continue
+            results.append({
+                "time": time_el.get_text(strip=True),
+                "variety": product,
+                "origin": place,
+                "price": price,
+                "change": change_el.get_text(strip=True) if change_el else "-",
+            })
+    except Exception:
+        pass
     return results
 
 def save_prices(data: list, source: str):
@@ -120,6 +109,8 @@ def save_prices(data: list, source: str):
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     init_db()
+    # 启动时立即抓一次
+    save_prices(fetch_prices(), "惠农网")
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: save_prices(fetch_prices(), "惠农网"),
@@ -131,7 +122,7 @@ async def lifespan(application: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="河南大蒜价格监控", lifespan=lifespan)
+app = FastAPI(title="全国大蒜价格监控", lifespan=lifespan)
 
 # ========== API 接口 ==========
 
@@ -148,9 +139,12 @@ def api_status():
 @app.get("/api/price")
 def api_price(variety: str = Query(None), origin: str = Query(None)):
     with get_db() as conn:
-        today = datetime.now().strftime("%Y-%m-%d")
+        latest = conn.execute("SELECT MAX(time) as t FROM prices").fetchone()
+        if not latest or not latest["t"]:
+            return {"current": None, "today_high": None, "today_low": None, "change": None}
+        latest_day = latest["t"][:10]
         where = "WHERE time LIKE ?"
-        params = [f"{today}%"]
+        params = [f"{latest_day}%"]
         if variety:
             where += " AND variety=?"
             params.append(variety)
@@ -212,7 +206,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>河南大蒜价格监控</title>
+    <title>全国大蒜价格监控</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -252,7 +246,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div class="topbar">
-        <div class="title">河南大蒜价格监控</div>
+        <div class="title">全国大蒜价格监控</div>
         <div class="status">
             <span id="updateTime">加载中...</span>
             <span class="status-dot ok" id="statusDot"></span>

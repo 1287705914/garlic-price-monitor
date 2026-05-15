@@ -66,17 +66,6 @@ class TestDatabase:
         assert rows[0]["price"] == 3.85
 
 
-class TestHenanFilter:
-    def test_is_henan_true(self):
-        assert app_module.is_henan("河南郑州市中牟县") is True
-        assert app_module.is_henan("开封市杞县") is True
-        assert app_module.is_henan("洛阳市") is True
-
-    def test_is_henan_false(self):
-        assert app_module.is_henan("山东潍坊市") is False
-        assert app_module.is_henan("江苏徐州市") is False
-
-
 class TestCrawler:
     def test_parse_cnhnb_html(self):
         """测试惠农网行情列表解析"""
@@ -130,7 +119,7 @@ class TestCrawler:
             product = product_el.get_text(strip=True)
             place = place_el.get_text(strip=True)
             price_text = price_el.get_text(strip=True)
-            if "蒜" not in product or not app_module.is_henan(place):
+            if "蒜" not in product:
                 continue
             price = float(price_text.replace("元/斤", "").replace("元/公斤", "").strip())
             results.append({
@@ -141,13 +130,12 @@ class TestCrawler:
                 "change": change_el.get_text(strip=True) if change_el else "-",
             })
 
-        # 应该过滤掉山东的那条
-        assert len(results) == 2
+        # 全国数据，三条全收录
+        assert len(results) == 3
         assert results[0]["variety"] == "白蒜"
         assert results[0]["origin"] == "郑州市中牟县"
         assert results[0]["price"] == 3.85
-        assert results[1]["variety"] == "红蒜"
-        assert results[1]["origin"] == "开封市杞县"
+        assert results[2]["origin"] == "山东潍坊市"
 
     def test_empty_page_handled(self):
         from bs4 import BeautifulSoup
@@ -195,5 +183,5 @@ class TestAPI:
     def test_homepage(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
-        assert "河南大蒜" in resp.text
+        assert "全国大蒜" in resp.text
         assert "chart.js" in resp.text
