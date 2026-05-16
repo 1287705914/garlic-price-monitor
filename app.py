@@ -115,8 +115,12 @@ def _check_url(url):
             return None
         resp.encoding = "gb2312"
         count = resp.text.count("批发市场")
-        if count > 0 and ("大蒜" in resp.text or "蒜" in resp.text):
-            return (url, count)
+        is_dasuan = "大蒜" in resp.text
+        has_suan = "蒜" in resp.text
+        if count > 0 and (is_dasuan or has_suan):
+            # 大蒜优先，蒜头/蒜苗等加权降低
+            priority = count * 2 if is_dasuan else count
+            return (url, count, priority)
     except Exception:
         pass
     return None
@@ -128,19 +132,36 @@ def find_latest_national_report() -> str:
 
     today = datetime.now().strftime("%Y%m%d")
 
-    # 粗扫：步长 10，覆盖 5000~50000
-    coarse_ids = list(range(5000, 50000, 10))
-    best_url, best_count = "", 0
+    # 粗扫：步长 10，找到含蒜文章的大致区域
+    coarse_ids = list(range(3000, 50000, 10))
+    best_area = 0
 
     for batch in [coarse_ids[i:i+1000] for i in range(0, len(coarse_ids), 1000)]:
         urls = [f"https://futures.stockstar.com/IG{today}{i:08d}.shtml" for i in batch]
         with ThreadPoolExecutor(max_workers=30) as ex:
             for result in ex.map(_check_url, urls):
-                if result and result[1] > best_count:
-                    best_url, best_count = result
+                if result and result[1] >= 20 and result[2] > 0:
+                    best_area = int(result[0].split("IG" + today)[-1].replace(".shtml", ""))
+                    break
+            if best_area:
+                break
 
-    if best_count < 10:
+    if not best_area:
         return ""
+
+    # 精扫：在区域 ±300 逐条扫描
+    best_url, best_priority = "", 0
+    fine_ids = list(range(max(1000, best_area - 300), best_area + 300))
+    for batch in [fine_ids[i:i+600] for i in range(0, len(fine_ids), 600)]:
+        urls = [f"https://futures.stockstar.com/IG{today}{i:08d}.shtml" for i in batch]
+        with ThreadPoolExecutor(max_workers=30) as ex:
+            for result in ex.map(_check_url, urls):
+                if result and result[2] > best_priority:
+                    best_url, best_priority = result[0], result[2]
+
+    if best_priority < 20:
+        return ""
+    return best_url
 
     return best_url
 
