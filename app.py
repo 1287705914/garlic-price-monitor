@@ -304,19 +304,18 @@ app = FastAPI(title="全国大蒜价格监控", lifespan=lifespan)
 
 @app.get("/api/refresh")
 def api_refresh():
-    """手动刷新数据"""
-    try:
-        crawl_and_save()
-        with get_db() as conn:
-            last = conn.execute("SELECT MAX(time) as t FROM prices").fetchone()
-            total = conn.execute("SELECT COUNT(*) as c FROM prices").fetchone()
-        return {
-            "success": True,
-            "last_update": last["t"] if last else None,
-            "total_records": total["c"] if total else 0,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    """手动刷新数据（后台执行，立即返回）"""
+    with get_db() as conn:
+        last = conn.execute("SELECT MAX(time) as t FROM prices").fetchone()
+        total = conn.execute("SELECT COUNT(*) as c FROM prices").fetchone()
+    # 后台执行爬虫，不阻塞响应
+    threading.Thread(target=crawl_and_save, daemon=True).start()
+    return {
+        "success": True,
+        "message": "刷新已启动，约1-2分钟后生效",
+        "last_update": last["t"] if last else None,
+        "total_records": total["c"] if total else 0,
+    }
 
 @app.get("/api/status")
 def api_status():
@@ -888,7 +887,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 var resp = await fetch('/api/refresh');
                 var result = await resp.json();
                 if (result.success) {
-                    await refresh();
+                    // 轮询等待爬虫完成（最多等2分钟）
+                    var oldTime = result.last_update;
+                    for (var i = 0; i < 24; i++) {
+                        await new Promise(function(r) { setTimeout(r, 5000); });
+                        var s = await fetch('/api/status');
+                        var d = await s.json();
+                        if (d.last_update !== oldTime) {
+                            await refresh();
+                            break;
+                        }
+                    }
+                    if (d && d.last_update === oldTime) await refresh();
                 }
             } catch(e) {
                 console.error('Refresh failed:', e);
