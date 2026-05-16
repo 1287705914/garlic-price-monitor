@@ -109,20 +109,31 @@ def extract_province(place: str) -> str:
 
 
 def find_latest_national_report() -> str:
-    """扫描 stockstar 找到最新全国大蒜价格日报 URL。"""
+    """扫描 stockstar 找到最新全国大蒜价格日报 URL，粗扫+精扫两阶段。"""
     today = datetime.now().strftime("%Y%m%d")
-    known_ids = {"20260513": 20133, "20260515": 20472}
-    base_id = known_ids.get(today)
-    if not base_id:
-        sorted_dates = sorted(known_ids.keys())
-        first_date = datetime.strptime(sorted_dates[0], "%Y%m%d")
-        first_id = known_ids[sorted_dates[0]]
-        days_diff = (datetime.now() - first_date).days
-        base_id = first_id + days_diff * 420
-    start = max(20000, base_id - 300)
-    end = base_id + 800
+
+    # 粗扫：步长 30，覆盖 5000~50000，快速定位 ID 区域
+    best_area, best_area_count = 0, 0
+    for id_num in range(5000, 50000, 30):
+        url = f"https://futures.stockstar.com/IG{today}{id_num:08d}.shtml"
+        try:
+            resp = http_requests.get(url, headers=HEADERS, timeout=5)
+            if resp.status_code != 200:
+                continue
+            resp.encoding = "gb2312"
+            count = resp.text.count("批发市场")
+            if count > best_area_count and ("大蒜" in resp.text or "蒜" in resp.text):
+                best_area_count = count
+                best_area = id_num
+        except Exception:
+            continue
+
+    if best_area_count < 3:
+        return ""
+
+    # 精扫：在最佳区域 ±200 逐条扫描
     best_url, best_count = "", 0
-    for id_num in range(start, end):
+    for id_num in range(max(1000, best_area - 200), best_area + 200):
         url = f"https://futures.stockstar.com/IG{today}{id_num:08d}.shtml"
         try:
             resp = http_requests.get(url, headers=HEADERS, timeout=5)
@@ -135,8 +146,10 @@ def find_latest_national_report() -> str:
                 best_url = url
         except Exception:
             continue
-    if best_count < 10:
-        return ""
+
+    if best_count >= 10:
+        return best_url
+    # 如果没有汇总报告，收集所有含蒜的单个市场报告
     return best_url
 
 
