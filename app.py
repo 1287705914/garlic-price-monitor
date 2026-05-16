@@ -117,9 +117,9 @@ def find_latest_national_report() -> str:
         first_date = datetime.strptime(sorted_dates[0], "%Y%m%d")
         first_id = known_ids[sorted_dates[0]]
         days_diff = (datetime.now() - first_date).days
-        base_id = first_id + days_diff * 170
-    start = max(20000, base_id - 100)
-    end = base_id + 100
+        base_id = first_id + days_diff * 420
+    start = max(20000, base_id - 300)
+    end = base_id + 800
     best_url, best_count = "", 0
     for id_num in range(start, end):
         url = f"https://futures.stockstar.com/IG{today}{id_num:08d}.shtml"
@@ -304,6 +304,7 @@ def api_status():
         total = conn.execute("SELECT COUNT(*) as c FROM prices").fetchone()
     return {
         "last_update": last["t"],
+        "data_date": last["t"][:10] if last and last["t"] else None,
         "total_records": total["c"],
     }
 
@@ -587,10 +588,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <button data-range="168">7天</button>
             <button data-range="720">30天</button>
             <span style="flex:1;"></span>
-            <span style="font-size:13px;color:#94a3b8;">品种:</span>
-            <button class="variety on" data-var="白蒜">白蒜</button>
-            <button class="variety on" data-var="红蒜">红蒜</button>
-            <button class="variety on" data-var="杂交蒜">杂交蒜</button>
+            <span style="font-size:13px;color:#94a3b8;">全国均价趋势</span>
         </div>
         <div class="chart-wrap"><canvas id="chart"></canvas></div>
     </div>
@@ -607,25 +605,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <script>
         let chart;
-        const COLORS = { '白蒜': '#60a5fa', '红蒜': '#f472b6', '杂交蒜': '#fbbf24' };
-        let selectedVarieties = ['白蒜', '红蒜', '杂交蒜'];
         let currentRange = 24;
-
-        document.querySelectorAll('button.variety').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var v = btn.dataset.var;
-                if (selectedVarieties.includes(v)) {
-                    if (selectedVarieties.length > 1) {
-                        selectedVarieties = selectedVarieties.filter(function(x) { return x !== v; });
-                        btn.classList.remove('on');
-                    }
-                } else {
-                    selectedVarieties.push(v);
-                    btn.classList.add('on');
-                }
-                loadHistory(currentRange);
-            });
-        });
 
         document.querySelectorAll('button[data-range]').forEach(function(btn) {
             btn.addEventListener('click', function() {
@@ -739,12 +719,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             var txt = document.getElementById('statusText');
             if (data.last_update) {
                 el.textContent = '最后更新: ' + data.last_update;
-                dot.className = 'status-dot ok';
-                txt.textContent = '正常';
+
+                var dataDate = data.last_update.substring(0, 10);
+                var today = new Date().toISOString().substring(0, 10);
+                var yesterday = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
+
+                if (dataDate === today) {
+                    dot.className = 'status-dot ok';
+                    txt.textContent = '今日数据';
+                    txt.style.color = '#4ade80';
+                } else if (dataDate === yesterday) {
+                    dot.className = 'status-dot ok';
+                    txt.textContent = '昨日数据';
+                    txt.style.color = '#fbbf24';
+                } else {
+                    dot.className = 'status-dot error';
+                    txt.textContent = '数据过期 (' + dataDate + ')';
+                    txt.style.color = '#f87171';
+                }
             } else {
                 el.textContent = '暂无数据';
                 dot.className = 'status-dot error';
                 txt.textContent = '数据缺失';
+                txt.style.color = '#f87171';
             }
         }
 
@@ -788,20 +785,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             var resp = await fetch('/api/history?hours=' + hours);
             var data = await resp.json();
 
-            var datasets = [];
-            for (var i = 0; i < selectedVarieties.length; i++) {
-                var v = selectedVarieties[i];
-                var points = data.filter(function(d) { return d.variety === v; });
-                datasets.push({
-                    label: v,
-                    data: points.map(function(p) { return { x: p.time, y: p.price }; }),
-                    borderColor: COLORS[v] || '#fff',
-                    backgroundColor: 'transparent',
-                    tension: 0.3,
-                    pointRadius: 0,
-                    borderWidth: 2,
-                });
-            }
+            // 按时段分组计算全国均价
+            var buckets = {};
+            data.forEach(function(d) {
+                // 按小时聚合
+                var key = d.time.substring(0, 13); // "2026-05-15 18"
+                if (!buckets[key]) buckets[key] = { sum: 0, count: 0 };
+                buckets[key].sum += d.price;
+                buckets[key].count += 1;
+            });
+            var avgPoints = Object.keys(buckets).sort().map(function(k) {
+                return { x: k + ':00', y: parseFloat((buckets[k].sum / buckets[k].count).toFixed(2)) };
+            });
+
+            var datasets = [{
+                label: '全国均价',
+                data: avgPoints,
+                borderColor: '#4ade80',
+                backgroundColor: 'rgba(74,222,128,0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+                borderWidth: 2,
+            }];
 
             var ctx = document.getElementById('chart').getContext('2d');
             if (chart) chart.destroy();
