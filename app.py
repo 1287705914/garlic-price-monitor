@@ -2,6 +2,7 @@
 import sqlite3
 import os
 import re
+import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
@@ -249,14 +250,8 @@ def save_prices(data: list, source: str):
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     init_db()
-    # 启动时从 stockstar 抓取全国数据（主力数据源）
-    stockstar_data = fetch_prices_stockstar()
-    if stockstar_data:
-        save_prices(stockstar_data, "证监会之星")
-    # 惠农网作为辅助
-    cnhnb_data = fetch_prices_cnhnb()
-    if cnhnb_data:
-        save_prices(cnhnb_data, "惠农网")
+    # 后台执行首次抓取，不阻塞服务启动
+    threading.Thread(target=crawl_and_save, daemon=True).start()
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: crawl_and_save(),
